@@ -154,10 +154,52 @@ def compare_tables(json_df, excel_df, json_id_col='id_number', excel_id_col=None
         'excel_only': excel_only
     }
 
+def load_attendance_data(attendance_file):
+    """Load and process attendance data"""
+    with open(attendance_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    # Extract the data array from the JSON
+    data_array = data.get('data', [])
+    
+    # Convert JSON data to DataFrame
+    df = pd.DataFrame(data_array)
+    
+    # Function to convert time string to hours
+    def time_to_hours(time_str):
+        if pd.isna(time_str):
+            return None
+        try:
+            hours, minutes = map(int, time_str.split(':'))
+            return hours + minutes / 60
+        except:
+            return None
+    
+    # Convert time columns to hours
+    df['t_start_hours'] = df['t_start'].apply(time_to_hours)
+    df['t_end_hours'] = df['t_end'].apply(time_to_hours)
+    
+    # Calculate shift duration in hours
+    df['shift_duration'] = df['t_end_hours'] - df['t_start_hours']
+    
+    # Group by employee and calculate statistics
+    stats = df.groupby('employee_number').agg({
+        'shift_duration': ['count', 'mean']
+    }).reset_index()
+    
+    # Flatten column names
+    stats.columns = ['employee_number', 'number_of_shifts', 'average_shift_hours']
+    
+    # Round average hours to 2 decimal places
+    stats['average_shift_hours'] = stats['average_shift_hours'].round(2)
+    
+    return stats
+
 def main():
     # File paths
     json_file = 'alfon-api-response.txt'
     excel_file = '/Users/who/keshet_data/alfon-manual.xlsx'
+    attendance_file = 'attendance-api-response.txt'
     
     try:
         # Load data
@@ -165,9 +207,29 @@ def main():
         json_df, json_original_count, json_duplicate_info = load_json_data(json_file)
         excel_df, excel_id_col, excel_original_count, excel_duplicate_info = load_excel_data(excel_file)
         
+        # Load attendance data
+        print("\nLoading attendance data...")
+        attendance_stats = load_attendance_data(attendance_file)
+        
         # Compare tables
         print("\nComparing tables...")
         results = compare_tables(json_df, excel_df, json_id_col='id_number', excel_id_col=excel_id_col)
+        
+        # Add attendance statistics to results
+        for group in ['matches', 'json_only', 'excel_only']:
+            if group == 'matches':
+                df = results[group]
+                # Merge with attendance stats using employee_number
+                df = df.merge(attendance_stats, 
+                            left_on='employee_number', 
+                            right_on='employee_number',
+                            how='left')
+            else:
+                df = results[group]
+                # Add empty columns for non-matching groups
+                df['number_of_shifts'] = None
+                df['average_shift_hours'] = None
+            results[group] = df
         
         # Print results summary first
         print("\nComparison Results Summary:")
@@ -176,7 +238,7 @@ def main():
         print(f"Number of IDs only in Excel (Manual): {len(results['excel_only'])}")
         
         # Print detailed summary for both files
-        print("\nJSON File Summary:")
+        print("\nJSON (API) File Summary:")
         print(f"Total rows: {json_original_count}")
         print(f"Empty IDs: {len(json_df[json_df['id_number'].isna() | (json_df['id_number'].astype(str).str.strip() == '')])}")
         if json_duplicate_info:
@@ -185,7 +247,7 @@ def main():
             print("Duplicate IDs: 0")
         print(f"Final unique IDs: {len(json_df)}")
         
-        print("\nExcel File Summary:")
+        print("\nExcel (Manual) File Summary:")
         print(f"Total rows: {excel_original_count}")
         print(f"Empty IDs: {len(excel_df[excel_df[excel_id_col].isna() | (excel_df[excel_id_col].astype(str).str.strip() == '')])}")
         if excel_duplicate_info:
@@ -194,15 +256,55 @@ def main():
             print("Duplicate IDs: 0")
         print(f"Final unique IDs: {len(excel_df)}")
         
+        # Print attendance statistics for each group
+        print("\nAttendance Statistics:")
+        attendance_summary = {}
+        for group_name, group_df in results.items():
+            # Format group name for display
+            display_name = {
+                'matches': 'Matches (Appear in both sources)',
+                'json_only': 'JSON (API) Only',
+                'excel_only': 'Excel (Manual) Only'
+            }[group_name]
+            
+            print(f"\n{display_name}:")
+            group_stats = {}
+            if 'number_of_shifts' in group_df.columns:
+                total_shifts = group_df['number_of_shifts'].sum()
+                avg_shifts = group_df['number_of_shifts'].mean()
+                avg_hours = group_df['average_shift_hours'].mean()
+                print(f"Total shifts: {total_shifts}")
+                print(f"Average shifts per employee: {avg_shifts:.2f}")
+                print(f"Average hours per shift: {avg_hours:.2f}")
+                group_stats.update({
+                    'total_shifts': float(total_shifts) if pd.notna(total_shifts) else 0,
+                    'avg_shifts_per_employee': float(avg_shifts) if pd.notna(avg_shifts) else 0,
+                    'avg_hours_per_shift': float(avg_hours) if pd.notna(avg_hours) else 0
+                })
+            
+            # Count employees with bank account details
+            if 'bank_account' in group_df.columns:
+                # Check if bank account details are actually filled (not empty string)
+                bank_account_count = group_df[
+                    (group_df['bank_account'].notna()) & 
+                    (group_df['bank_account'].astype(str).str.strip() != '')
+                ].shape[0]
+                total_employees = len(group_df)
+                print(f"Employees with bank account details: {bank_account_count} out of {total_employees}")
+                group_stats['employees_with_bank_account'] = int(bank_account_count)
+                group_stats['total_employees'] = int(total_employees)
+            
+            attendance_summary[group_name] = group_stats
+        
         # Verify the numbers add up
         total_compared = len(results['matches']) + len(results['json_only']) + len(results['excel_only'])
         print(f"\nVerification:")
         print(f"Total unique IDs compared: {total_compared}")
-        print(f"Total unique IDs in JSON: {len(json_df)}")
-        print(f"Total unique IDs in Excel: {len(excel_df)}")
+        print(f"Total unique IDs in JSON (API): {len(json_df)}")
+        print(f"Total unique IDs in Excel (Manual): {len(excel_df)}")
         print(f"Appear in both: {len(results['matches'])}")
-        print(f"Only in JSON: {len(results['json_only'])}")
-        print(f"Only in Excel: {len(results['excel_only'])}")
+        print(f"Only in JSON (API): {len(results['json_only'])}")
+        print(f"Only in Excel (Manual): {len(results['excel_only'])}")
         
         # Convert DataFrames to dictionaries for JSON output
         output_data = {
@@ -215,6 +317,7 @@ def main():
                 'empty_ids_json': len(json_df[json_df['id_number'].isna() | (json_df['id_number'].astype(str).str.strip() == '')]),
                 'empty_ids_excel': len(excel_df[excel_df[excel_id_col].isna() | (excel_df[excel_id_col].astype(str).str.strip() == '')])
             },
+            'attendance_summary': attendance_summary,
             'matching_ids': results['matches'].to_dict(orient='records'),
             'json_only': results['json_only'].to_dict(orient='records'),
             'excel_only': results['excel_only'].to_dict(orient='records')
@@ -228,9 +331,8 @@ def main():
         print(f"\nDetailed results have been saved to {output_file}")
         
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main() 
