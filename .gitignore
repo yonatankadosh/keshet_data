@@ -1,0 +1,11 @@
+# Data files
+*.txt
+*.xlsx
+
+# Results
+*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class 
