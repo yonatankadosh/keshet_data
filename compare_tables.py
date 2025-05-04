@@ -217,16 +217,21 @@ def main():
         
         # Add attendance statistics to results
         for group in ['matches', 'json_only', 'excel_only']:
+            df = results[group]
             if group == 'matches':
-                df = results[group]
-                # Merge with attendance stats using employee_number
+                # For matches, use employee_number
                 df = df.merge(attendance_stats, 
                             left_on='employee_number', 
                             right_on='employee_number',
                             how='left')
-            else:
-                df = results[group]
-                # Add empty columns for non-matching groups
+            elif group == 'json_only':
+                # For JSON only, use employee_number
+                df = df.merge(attendance_stats, 
+                            left_on='employee_number', 
+                            right_on='employee_number',
+                            how='left')
+            else:  # excel_only
+                # For Excel only, we can't merge with attendance data
                 df['number_of_shifts'] = None
                 df['average_shift_hours'] = None
             results[group] = df
@@ -293,6 +298,17 @@ def main():
                 print(f"Employees with bank account details: {bank_account_count} out of {total_employees}")
                 group_stats['employees_with_bank_account'] = int(bank_account_count)
                 group_stats['total_employees'] = int(total_employees)
+            
+            # Count employees with at least one shift
+            if 'number_of_shifts' in group_df.columns:
+                total_employees = len(group_df)  # Get total employees for current group
+                employees_with_shifts = group_df[group_df['number_of_shifts'].notna() & (group_df['number_of_shifts'] > 0)].shape[0]
+                print(f"Employees with at least one shift: {employees_with_shifts} out of {total_employees}")
+                group_stats['employees_with_shifts'] = int(employees_with_shifts)
+            else:
+                total_employees = len(group_df)  # Get total employees for current group
+                print(f"Employees with at least one shift: 0 out of {total_employees}")
+                group_stats['employees_with_shifts'] = 0
             
             attendance_summary[group_name] = group_stats
         
